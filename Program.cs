@@ -1,0 +1,259 @@
+﻿using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Net;
+using System.Net.Sockets;
+using System.Text;
+using System.Threading;
+using Common;
+using Newtonsoft.Json;
+
+namespace Snake
+{
+    class Program
+    {
+        static List<ViewModelGames> viewModelGames = new List<ViewModelGames>();
+        static List<ViewModelUserSettings> remoteIPAddress = new List<ViewModelUserSettings>();
+        static List<Leaders> Leaders = new List<Leaders>();
+        static int localPort = 5001;
+        static int MaxSpeed = 40;
+
+        static void Main(string[] args)
+        {
+            try
+            {
+                // Шаг 14
+                Thread tRec = new Thread(new ThreadStart(Receiver));
+                tRec.Start();
+
+                Thread tTime = new Thread(Timer);
+                tTime.Start();
+            }
+            catch (Exception ex)
+            {
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine("Возникло исключение: " + ex.ToString() + "\n " + ex.Message);
+            }
+        }
+
+        // Шаг 8
+        public static void Send()
+        {
+            foreach (ViewModelUserSettings User in remoteIPAddress.ToList())
+            {
+                UdpClient sender = new UdpClient();
+                IPEndPoint endPoint = new IPEndPoint(IPAddress.Parse(User.IPAddress), int.Parse(User.Port));
+                try
+                {
+                    var gameData = viewModelGames.Find(x => x.IdSnake == User.IdSnake);
+                    if (gameData == null) continue;
+
+                    byte[] bytes = Encoding.UTF8.GetBytes(JsonConvert.SerializeObject(gameData));
+                    sender.Send(bytes, bytes.Length, endPoint);
+                }
+                catch (Exception ex)
+                {
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.WriteLine("Возникло исключение: " + ex.ToString() + "\n " + ex.Message);
+                }
+                finally
+                {
+                    sender.Close();
+                }
+            }
+        }
+
+        // Шаг 9
+        public static void Receiver()
+        {
+            UdpClient receivingUdpClient = new UdpClient(localPort);
+            IPEndPoint RemoteIpEndPoint = null;
+
+            try
+            {
+                Console.WriteLine("Команды сервера:"); // Как в методичке
+                while (true)
+                {
+                    byte[] receiveBytes = receivingUdpClient.Receive(ref RemoteIpEndPoint);
+                    string returnData = Encoding.UTF8.GetString(receiveBytes);
+                    Console.WriteLine("Получена команда: " + returnData);
+
+                    if (returnData.Contains("/start"))
+                    {
+                        string[] dataMessage = returnData.Split('|');
+                        ViewModelUserSettings viewModelUserSettings = JsonConvert.DeserializeObject<ViewModelUserSettings>(dataMessage[1]);
+
+                        viewModelUserSettings.IdSnake = AddSnake();
+                        remoteIPAddress.Add(viewModelUserSettings);
+
+                        var newGame = viewModelGames.Find(x => x.IdSnake == viewModelUserSettings.IdSnake);
+                        if (newGame != null) newGame.IdSnake = viewModelUserSettings.IdSnake;
+
+                        Console.ForegroundColor = ConsoleColor.Green;
+                        Console.WriteLine($"Подключился пользователь: {viewModelUserSettings.IPAddress}:{viewModelUserSettings.Port}");
+                        Console.ResetColor();
+                    }
+                    else
+                    {
+                        string[] dataMessage = returnData.Split('|');
+                        ViewModelUserSettings viewModelUserSettings = JsonConvert.DeserializeObject<ViewModelUserSettings>(dataMessage[1]);
+
+                        int IdPlayer = remoteIPAddress.FindIndex(x => x.IPAddress == viewModelUserSettings.IPAddress && x.Port == viewModelUserSettings.Port);
+
+                        if (IdPlayer != -1)
+                        {
+                            var game = viewModelGames.Find(x => x.IdSnake == remoteIPAddress[IdPlayer].IdSnake);
+                            if (game != null && !game.SnakesPlayers.GameOver)
+                            {
+                                if (dataMessage[0] == "Up" && game.SnakesPlayers.direction != Snakes.Direction.Down)
+                                    game.SnakesPlayers.direction = Snakes.Direction.Up;
+                                else if (dataMessage[0] == "Down" && game.SnakesPlayers.direction != Snakes.Direction.Up)
+                                    game.SnakesPlayers.direction = Snakes.Direction.Down;
+                                else if (dataMessage[0] == "Left" && game.SnakesPlayers.direction != Snakes.Direction.Right)
+                                    game.SnakesPlayers.direction = Snakes.Direction.Left;
+                                else if (dataMessage[0] == "Right" && game.SnakesPlayers.direction != Snakes.Direction.Left)
+                                    game.SnakesPlayers.direction = Snakes.Direction.Right;
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine("Возникло исключение: " + ex.ToString() + "\n " + ex.Message);
+            }
+        }
+
+        // Шаг 10
+        public static int AddSnake()
+        {
+            ViewModelGames viewModelGamesPlayer = new ViewModelGames();
+            viewModelGamesPlayer.SnakesPlayers = new Snakes()
+            {
+                Points = new List<Snakes.Point>()
+                {
+                    new Snakes.Point() { X = 30, Y = 10 },
+                    new Snakes.Point() { X = 20, Y = 10 },
+                    new Snakes.Point() { X = 10, Y = 10 }
+                },
+                direction = Snakes.Direction.Start
+            };
+            viewModelGamesPlayer.Points = new Snakes.Point(new Random().Next(10, 783), new Random().Next(10, 410));
+            viewModelGames.Add(viewModelGamesPlayer);
+
+            return viewModelGames.FindIndex(x => x == viewModelGamesPlayer);
+        }
+
+        // Шаг 11
+        public static void Timer()
+        {
+            while (true)
+            {
+                Thread.Sleep(100);
+
+                List<ViewModelGames> RemoteSnakes = viewModelGames.FindAll(x => x.SnakesPlayers.GameOver);
+                if (RemoteSnakes.Count > 0)
+                {
+                    foreach (ViewModelGames DeadSnake in RemoteSnakes)
+                    {
+                        remoteIPAddress.RemoveAll(x => x.IdSnake == DeadSnake.IdSnake);
+                    }
+                    viewModelGames.RemoveAll(x => x.SnakesPlayers.GameOver);
+                }
+
+                foreach (ViewModelUserSettings User in remoteIPAddress.ToList())
+                {
+                    var game = viewModelGames.Find(x => x.IdSnake == User.IdSnake);
+                    if (game == null) continue;
+                    Snakes Snake = game.SnakesPlayers;
+
+                    for (int i = Snake.Points.Count - 1; i > 0; i--)
+                    {
+                        if (i != 0) Snake.Points[i] = Snake.Points[i - 1];
+                    }
+
+                    int Speed = 10 + (int)Math.Round(Snake.Points.Count / 20f);
+                    if (Speed > MaxSpeed) Speed = MaxSpeed;
+
+                    if (Snake.direction == Snakes.Direction.Right)
+                        Snake.Points[0] = new Snakes.Point() { X = Snake.Points[0].X + Speed, Y = Snake.Points[0].Y };
+                    else if (Snake.direction == Snakes.Direction.Down)
+                        Snake.Points[0] = new Snakes.Point() { X = Snake.Points[0].X, Y = Snake.Points[0].Y + Speed };
+                    else if (Snake.direction == Snakes.Direction.Up)
+                        Snake.Points[0] = new Snakes.Point() { X = Snake.Points[0].X, Y = Snake.Points[0].Y - Speed };
+                    else if (Snake.direction == Snakes.Direction.Left)
+                        Snake.Points[0] = new Snakes.Point() { X = Snake.Points[0].X - Speed, Y = Snake.Points[0].Y };
+
+                    if (Snake.Points[0].X < 0 || Snake.Points[0].X > 799 || Snake.Points[0].Y < 0 || Snake.Points[0].Y > 420)
+                        Snake.GameOver = true;
+
+                    if (Snake.direction != Snakes.Direction.Start)
+                    {
+                        for (int i = 1; i < Snake.Points.Count; i++)
+                        {
+                            if (Snake.Points[0].X > Snake.Points[i].X - 5 && Snake.Points[0].X < Snake.Points[i].X + 5 &&
+                                Snake.Points[0].Y > Snake.Points[i].Y - 5 && Snake.Points[0].Y < Snake.Points[i].Y + 5)
+                            {
+                                Snake.GameOver = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (Snake.Points[0].X > game.Points.X - 15 && Snake.Points[0].X < game.Points.X + 15 &&
+                        Snake.Points[0].Y > game.Points.Y - 15 && Snake.Points[0].Y < game.Points.Y + 15)
+                    {
+                        game.Points = new Snakes.Point(new Random().Next(10, 783), new Random().Next(10, 410));
+                        Snake.Points.Add(new Snakes.Point() { X = Snake.Points[Snake.Points.Count - 1].X, Y = Snake.Points[Snake.Points.Count - 1].Y });
+
+                        LoadLeaders();
+                        Leaders.Add(new Leaders() { Name = User.Name, Points = Snake.Points.Count - 3 });
+                        Leaders = Leaders.OrderByDescending(x => x.Points).ThenBy(x => x.Name).ToList();
+                        game.Top = Leaders.FindIndex(x => x.Points == Snake.Points.Count - 3 && x.Name == User.Name) + 1;
+                    }
+
+                    if (Snake.GameOver)
+                    {
+                        LoadLeaders();
+                        Leaders.Add(new Leaders() { Name = User.Name, Points = Snake.Points.Count - 3 });
+                        SaveLeaders();
+                    }
+                }
+                Send();
+            }
+        }
+
+        // Шаг 12
+        public static void SaveLeaders()
+        {
+            string json = JsonConvert.SerializeObject(Leaders);
+            StreamWriter SW = new StreamWriter("./leaders.txt");
+            SW.WriteLine(json);
+            SW.Close();
+        }
+
+        // Шаг 13
+        public static void LoadLeaders()
+        {
+            if (File.Exists("./leaders.txt"))
+            {
+                StreamReader SR = new StreamReader("./leaders.txt");
+                string json = SR.ReadLine();
+                SR.Close();
+                if (!string.IsNullOrEmpty(json))
+                    Leaders = JsonConvert.DeserializeObject<List<Leaders>>(json);
+                else
+                    Leaders = new List<Leaders>();
+            }
+            else
+                Leaders = new List<Leaders>();
+        }
+    }
+}
+// Конец файла
+
+// Проверка
+
+// Конец
